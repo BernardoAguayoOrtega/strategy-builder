@@ -548,29 +548,31 @@ class StrategyBuilderUI:
         ui.notify('Starting optimization... This may take several minutes.', type='info')
 
         try:
-            # Download data
-            ui.notify('Downloading market data...', type='info')
-            df = yf.download(
-                self.asset_input.value,
-                start=self.start_date.value,
-                end=self.end_date.value,
-                interval=self.timeframe_select.value,
-                progress=False
-            )
+            # Fetch data using data abstraction layer
+            ui.notify('Fetching market data...', type='info')
+            try:
+                df = fetch_data(
+                    symbol=self.asset_input.value,
+                    start=self.start_date.value,
+                    end=self.end_date.value,
+                    interval=self.timeframe_select.value,
+                    provider='yfinance'
+                )
+            except Exception as e:
+                ui.notify(f'YFinance unavailable, using mock data for testing', type='warning')
+                df = fetch_data(
+                    symbol=self.asset_input.value,
+                    start=self.start_date.value,
+                    end=self.end_date.value,
+                    interval=self.timeframe_select.value,
+                    provider='mock'
+                )
 
             if df.empty:
                 ui.notify(f'No data found for {self.asset_input.value}', type='negative')
                 return
 
-            # Normalize column names
-            df.columns = [col.lower() if isinstance(col, str) else col for col in df.columns]
-
-            # Handle multi-index columns from yfinance
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = [col[0].lower() if isinstance(col, tuple) else col.lower()
-                             for col in df.columns]
-
-            ui.notify(f'Downloaded {len(df)} bars. Building parameter grid...', type='info')
+            ui.notify(f'Fetched {len(df)} bars. Building parameter grid...', type='info')
 
             # Build parameter ranges for optimization
             # Extract only the parameters for the selected pattern
