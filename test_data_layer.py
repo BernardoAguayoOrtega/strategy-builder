@@ -1,7 +1,8 @@
 # test_data_layer.py - Test Data Abstraction Layer
 
 import sys
-sys.path.insert(0, '/home/user/strategy-builder')
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.data_providers import (
     DataManager,

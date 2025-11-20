@@ -1,7 +1,8 @@
 # test_framework_simple.py - Integration test with data abstraction layer
 
 import sys
-sys.path.insert(0, '/home/user/strategy-builder')
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.builder_framework import *
 from src.backtesting_framework import BacktestEngine, BacktestConfig

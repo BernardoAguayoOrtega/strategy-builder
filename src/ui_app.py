@@ -14,7 +14,7 @@ Key Features:
 from nicegui import ui, app
 from builder_framework import get_all_components, get_component
 from backtesting_framework import BacktestEngine, BacktestConfig
-import yfinance as yf
+from data_providers import fetch_data, DataManager
 import pandas as pd
 from typing import Dict, List, Any, Optional
 import traceback
@@ -434,31 +434,34 @@ class StrategyBuilderUI:
             ui.notify('Please select an entry pattern first', type='negative')
             return
 
-        ui.notify('Downloading market data...', type='info')
+        ui.notify('Fetching market data...', type='info')
 
         try:
-            # Download data
-            df = yf.download(
-                self.asset_input.value,
-                start=self.start_date.value,
-                end=self.end_date.value,
-                interval=self.timeframe_select.value,
-                progress=False
-            )
+            # Fetch data using data abstraction layer
+            # Try yfinance first, fallback to mock data for testing
+            try:
+                df = fetch_data(
+                    symbol=self.asset_input.value,
+                    start=self.start_date.value,
+                    end=self.end_date.value,
+                    interval=self.timeframe_select.value,
+                    provider='yfinance'
+                )
+            except Exception as e:
+                ui.notify(f'YFinance unavailable, using mock data for testing', type='warning')
+                df = fetch_data(
+                    symbol=self.asset_input.value,
+                    start=self.start_date.value,
+                    end=self.end_date.value,
+                    interval=self.timeframe_select.value,
+                    provider='mock'
+                )
 
             if df.empty:
                 ui.notify(f'No data found for {self.asset_input.value}', type='negative')
                 return
 
-            # Normalize column names
-            df.columns = [col.lower() if isinstance(col, str) else col for col in df.columns]
-
-            # Handle multi-index columns from yfinance
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = [col[0].lower() if isinstance(col, tuple) else col.lower()
-                             for col in df.columns]
-
-            ui.notify(f'Downloaded {len(df)} bars. Applying pattern...', type='info')
+            ui.notify(f'Fetched {len(df)} bars. Applying pattern...', type='info')
 
             # Apply pattern
             pattern_func = get_component('entry_pattern', self.selected_pattern)['function']
