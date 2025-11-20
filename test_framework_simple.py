@@ -1,15 +1,11 @@
-# test_framework_simple.py - Integration test without external dependencies
+# test_framework_simple.py - Integration test with data abstraction layer
 
 import sys
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-
-# Add src to path
 sys.path.insert(0, '/home/user/strategy-builder')
 
 from src.builder_framework import *
 from src.backtesting_framework import BacktestEngine, BacktestConfig
+from src.data_providers import fetch_data, DataManager
 
 # 1. Discovery Test
 print("=" * 60)
@@ -26,34 +22,18 @@ for category, components in all_components.items():
             print(f"    Description: {metadata.description[:60]}...")
             print(f"    Parameters: {list(metadata.parameters.keys())}")
 
-# 2. Create Mock Data
+# 2. Fetch Data Using Data Layer
 print("\n" + "=" * 60)
-print("CREATING MOCK DATA:")
+print("FETCHING DATA - Using Data Abstraction Layer:")
 print("=" * 60)
 
-# Generate 1 year of daily data
-dates = pd.date_range(start='2023-01-01', end='2023-12-31', freq='D')
-n = len(dates)
+# Use the data layer to fetch mock data
+df = fetch_data('AAPL', '2023-01-01', '2023-12-31', interval='1d', provider='mock')
 
-# Create price data with realistic patterns
-np.random.seed(42)
-close = 100 + np.cumsum(np.random.randn(n) * 2)  # Random walk
-high = close + np.abs(np.random.randn(n) * 1)
-low = close - np.abs(np.random.randn(n) * 1)
-open_prices = close + np.random.randn(n) * 0.5
-volume = np.random.randint(1000000, 10000000, n)
-
-df = pd.DataFrame({
-    'open': open_prices,
-    'high': high,
-    'low': low,
-    'close': close,
-    'volume': volume
-}, index=dates)
-
-print(f"Created {len(df)} bars of mock data")
-print(f"Date range: {df.index[0]} to {df.index[-1]}")
-print(f"Price range: ${df['close'].min():.2f} - ${df['close'].max():.2f}")
+print(f"✓ Fetched {len(df)} bars using MockDataProvider")
+print(f"  Date range: {df.index[0]} to {df.index[-1]}")
+print(f"  Price range: ${df['close'].min():.2f} - ${df['close'].max():.2f}")
+print(f"  Data source: AGNOSTIC (can switch to CSV/yfinance without code changes)")
 
 # 3. Test Pattern Detection
 print("\n" + "=" * 60)
