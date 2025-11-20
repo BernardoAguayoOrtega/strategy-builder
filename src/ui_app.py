@@ -1,0 +1,634 @@
+"""
+Dynamic Strategy Builder UI - NiceGUI Web Interface
+
+This module provides a web-based interface that dynamically discovers and renders
+all available strategy components from builder_framework.py.
+
+Key Features:
+- Zero hardcoding: All UI elements generated from component metadata
+- Automatic discovery: New components appear instantly
+- Smart parameter rendering: int → Number input, choice → Dropdown, etc.
+- Optimization support: Optional min/max ranges for optimizable parameters
+"""
+
+from nicegui import ui, app
+from builder_framework import get_all_components, get_component
+from backtesting_framework import BacktestEngine, BacktestConfig
+import yfinance as yf
+import pandas as pd
+from typing import Dict, List, Any, Optional
+import traceback
+
+
+class StrategyBuilderUI:
+    """Main UI application class"""
+
+    def __init__(self):
+        self.components = get_all_components()
+        self.selected_pattern = None
+        self.selected_filters = []
+        self.selected_sessions = []
+        self.parameter_values = {}  # Current parameter values
+        self.optimization_ranges = {}  # Optimization ranges for parameters
+
+        # UI containers (will be set during render)
+        self.param_container = None
+        self.results_container = None
+
+    def render(self):
+        """Main render method - builds the entire UI"""
+        # Header
+        with ui.header().classes('bg-primary text-white'):
+            ui.label('🚀 Dynamic Strategy Builder').classes('text-h4')
+            ui.label('Zero-Code Trading Strategy Development').classes('text-subtitle2 ml-4')
+
+        # Main layout
+        with ui.row().classes('w-full gap-4 p-4'):
+            # Left panel: Component selection
+            with ui.card().classes('w-1/3'):
+                self._render_component_selector()
+
+            # Middle panel: Parameters
+            with ui.card().classes('w-1/3'):
+                self._render_parameter_editor()
+
+            # Right panel: Backtest configuration
+            with ui.card().classes('w-1/3'):
+                self._render_backtest_config()
+
+        # Bottom panel: Results
+        with ui.card().classes('w-full mt-4 p-4'):
+            self._render_results_area()
+
+    def _render_component_selector(self):
+        """Dynamically render all available components"""
+        ui.label('Step 1: Select Components').classes('text-h6 mb-4')
+
+        # Entry Patterns (Radio buttons - select ONE)
+        ui.label('Entry Pattern (Select One):').classes('font-bold mt-4 mb-2')
+
+        pattern_options = []
+        pattern_descriptions = {}
+
+        for name, comp_data in self.components['entry_pattern'].items():
+            metadata = comp_data['metadata']
+            pattern_options.append(metadata.display_name)
+            pattern_descriptions[metadata.display_name] = {
+                'name': name,
+                'description': metadata.description
+            }
+
+        # Create radio group
+        pattern_radio = ui.radio(
+            pattern_options,
+            value=None,
+            on_change=lambda e: self._on_pattern_selected(
+                pattern_descriptions[e.value]['name'] if e.value else None
+            )
+        ).props('dense')
+
+        # Display descriptions
+        for name, comp_data in self.components['entry_pattern'].items():
+            metadata = comp_data['metadata']
+            ui.label(f'• {metadata.display_name}: {metadata.description}').classes(
+                'text-xs text-gray-600 ml-6 mb-2'
+            )
+
+        ui.separator()
+
+        # Filters (Checkboxes - select MULTIPLE)
+        ui.label('Filters (Optional):').classes('font-bold mt-4 mb-2')
+
+        with ui.column().classes('w-full'):
+            for name, comp_data in self.components['filter'].items():
+                metadata = comp_data['metadata']
+
+                ui.checkbox(
+                    metadata.display_name,
+                    value=metadata.enabled_by_default,
+                    on_change=lambda e, n=name: self._on_filter_toggled(n, e.value)
+                )
+                ui.label(metadata.description).classes('text-xs text-gray-600 ml-6 mb-2')
+
+        ui.separator()
+
+        # Sessions
+        ui.label('Trading Sessions (Optional):').classes('font-bold mt-4 mb-2')
+
+        with ui.column().classes('w-full'):
+            for name, comp_data in self.components['session'].items():
+                metadata = comp_data['metadata']
+
+                ui.checkbox(
+                    metadata.display_name,
+                    value=metadata.enabled_by_default,
+                    on_change=lambda e, n=name: self._on_session_toggled(n, e.value)
+                )
+                ui.label(metadata.description).classes('text-xs text-gray-600 ml-6 mb-2')
+
+    def _render_parameter_editor(self):
+        """Dynamically render parameters for selected components"""
+        ui.label('Step 2: Configure Parameters').classes('text-h6 mb-4')
+
+        ui.label('Parameters will appear here when you select components').classes(
+            'text-sm text-gray-500 italic mb-4'
+        )
+
+        # Container for dynamic parameters
+        self.param_container = ui.column().classes('w-full')
+
+    def _update_parameter_editor(self):
+        """Update parameter editor based on selected components"""
+        if self.param_container is None:
+            return
+
+        self.param_container.clear()
+
+        with self.param_container:
+            # Pattern parameters
+            if self.selected_pattern:
+                comp_data = get_component('entry_pattern', self.selected_pattern)
+                metadata = comp_data['metadata']
+
+                ui.label(f'{metadata.display_name} Parameters:').classes('font-bold mt-2 mb-2')
+                self._render_parameters(metadata.parameters, self.selected_pattern, 'entry_pattern')
+
+                ui.separator().classes('my-4')
+
+            # Filter parameters
+            for filter_name in self.selected_filters:
+                comp_data = get_component('filter', filter_name)
+                metadata = comp_data['metadata']
+
+                ui.label(f'{metadata.display_name} Parameters:').classes('font-bold mt-2 mb-2')
+                self._render_parameters(metadata.parameters, filter_name, 'filter')
+
+                ui.separator().classes('my-4')
+
+            # Session parameters
+            for session_name in self.selected_sessions:
+                comp_data = get_component('session', session_name)
+                metadata = comp_data['metadata']
+
+                if metadata.parameters:  # Only show if has parameters
+                    ui.label(f'{metadata.display_name} Parameters:').classes('font-bold mt-2 mb-2')
+                    self._render_parameters(metadata.parameters, session_name, 'session')
+
+                    ui.separator().classes('my-4')
+
+            if not self.selected_pattern and not self.selected_filters and not self.selected_sessions:
+                ui.label('No components selected yet').classes('text-sm text-gray-500 italic')
+
+    def _render_parameters(self, parameters: Dict, component_name: str, category: str):
+        """Render individual parameters dynamically"""
+        for param_name, param_spec in parameters.items():
+            param_key = f"{category}.{component_name}.{param_name}"
+
+            # Set default value if not already set
+            if param_key not in self.parameter_values:
+                self.parameter_values[param_key] = param_spec['default']
+
+            # Render based on type
+            if param_spec['type'] == 'int':
+                ui.number(
+                    label=param_spec['display_name'],
+                    value=param_spec['default'],
+                    min=param_spec.get('min', 0),
+                    max=param_spec.get('max', 1000),
+                    step=param_spec.get('step', 1),
+                    on_change=lambda e, k=param_key: self._on_param_changed(k, int(e.value))
+                ).props('dense outlined').classes('w-full')
+
+                # Add optimization range if optimizable
+                if param_spec.get('optimizable', False):
+                    with ui.row().classes('w-full gap-2 mt-1 mb-2'):
+                        ui.label('Optimize range:').classes('text-xs font-bold')
+                        ui.number(
+                            label='Min',
+                            value=param_spec.get('min', 0),
+                            on_change=lambda e, k=param_key: self._set_opt_min(k, int(e.value))
+                        ).props('dense outlined').classes('w-24')
+                        ui.number(
+                            label='Max',
+                            value=param_spec.get('max', 100),
+                            on_change=lambda e, k=param_key: self._set_opt_max(k, int(e.value))
+                        ).props('dense outlined').classes('w-24')
+                        ui.number(
+                            label='Step',
+                            value=param_spec.get('step', 1),
+                            on_change=lambda e, k=param_key: self._set_opt_step(k, int(e.value))
+                        ).props('dense outlined').classes('w-24')
+
+            elif param_spec['type'] == 'float':
+                ui.number(
+                    label=param_spec['display_name'],
+                    value=param_spec['default'],
+                    min=param_spec.get('min', 0.0),
+                    max=param_spec.get('max', 100.0),
+                    step=param_spec.get('step', 0.1),
+                    format='%.2f',
+                    on_change=lambda e, k=param_key: self._on_param_changed(k, float(e.value))
+                ).props('dense outlined').classes('w-full')
+
+                # Add optimization range if optimizable
+                if param_spec.get('optimizable', False):
+                    with ui.row().classes('w-full gap-2 mt-1 mb-2'):
+                        ui.label('Optimize range:').classes('text-xs font-bold')
+                        ui.number(
+                            label='Min',
+                            value=param_spec.get('min', 0.0),
+                            step=param_spec.get('step', 0.1),
+                            format='%.2f',
+                            on_change=lambda e, k=param_key: self._set_opt_min(k, float(e.value))
+                        ).props('dense outlined').classes('w-24')
+                        ui.number(
+                            label='Max',
+                            value=param_spec.get('max', 10.0),
+                            step=param_spec.get('step', 0.1),
+                            format='%.2f',
+                            on_change=lambda e, k=param_key: self._set_opt_max(k, float(e.value))
+                        ).props('dense outlined').classes('w-24')
+                        ui.number(
+                            label='Step',
+                            value=param_spec.get('step', 0.1),
+                            format='%.2f',
+                            on_change=lambda e, k=param_key: self._set_opt_step(k, float(e.value))
+                        ).props('dense outlined').classes('w-24')
+
+            elif param_spec['type'] == 'choice':
+                ui.select(
+                    label=param_spec['display_name'],
+                    options=param_spec['options'],
+                    value=param_spec['default'],
+                    on_change=lambda e, k=param_key: self._on_param_changed(k, e.value)
+                ).props('dense outlined').classes('w-full')
+
+            elif param_spec['type'] == 'bool':
+                ui.checkbox(
+                    param_spec['display_name'],
+                    value=param_spec['default'],
+                    on_change=lambda e, k=param_key: self._on_param_changed(k, e.value)
+                )
+
+            # Description
+            if param_spec.get('description'):
+                ui.label(param_spec['description']).classes('text-xs text-gray-600 mb-3')
+
+    def _render_backtest_config(self):
+        """Backtest configuration panel"""
+        ui.label('Step 3: Run Backtest').classes('text-h6 mb-4')
+
+        with ui.column().classes('w-full gap-2'):
+            # Asset selection
+            self.asset_input = ui.input(
+                label='Asset Symbol',
+                value='AAPL',
+                placeholder='e.g., AAPL, EURUSD=X, BTC-USD'
+            ).props('dense outlined').classes('w-full')
+
+            ui.label('Examples: AAPL (stock), EURUSD=X (forex), BTC-USD (crypto)').classes(
+                'text-xs text-gray-500 mb-2'
+            )
+
+            # Timeframe
+            self.timeframe_select = ui.select(
+                label='Timeframe',
+                options=['1m', '5m', '15m', '30m', '1h', '1d', '1wk'],
+                value='1d'
+            ).props('dense outlined').classes('w-full')
+
+            # Date range
+            ui.label('Date Range:').classes('font-bold mt-2 mb-1')
+
+            with ui.row().classes('w-full gap-2'):
+                self.start_date = ui.input(
+                    label='Start Date',
+                    value='2023-01-01'
+                ).props('dense outlined type=date').classes('w-1/2')
+
+                self.end_date = ui.input(
+                    label='End Date',
+                    value='2024-01-01'
+                ).props('dense outlined type=date').classes('w-1/2')
+
+            ui.separator().classes('my-4')
+
+            # Backtest settings
+            ui.label('Backtest Settings:').classes('font-bold mb-2')
+
+            self.initial_capital = ui.number(
+                label='Initial Capital',
+                value=100000,
+                min=1000,
+                max=10000000,
+                step=1000,
+                format='$%.0f'
+            ).props('dense outlined').classes('w-full')
+
+            self.commission = ui.number(
+                label='Commission per Trade',
+                value=1.5,
+                min=0,
+                max=100,
+                step=0.5,
+                format='$%.2f'
+            ).props('dense outlined').classes('w-full')
+
+            self.slippage = ui.number(
+                label='Slippage (pips)',
+                value=1.0,
+                min=0,
+                max=10,
+                step=0.5,
+                format='%.1f'
+            ).props('dense outlined').classes('w-full')
+
+            ui.separator().classes('my-4')
+
+            # Action buttons
+            ui.button(
+                'Run Single Backtest',
+                on_click=self._run_single_backtest,
+                icon='play_arrow'
+            ).props('color=primary').classes('w-full')
+
+            ui.button(
+                'Run Optimization (Phase 3)',
+                on_click=self._run_optimization,
+                icon='tune'
+            ).props('color=secondary disabled').classes('w-full mt-2')
+
+            ui.label('Optimization will be enabled in Phase 3').classes(
+                'text-xs text-gray-500 italic mt-1'
+            )
+
+    def _render_results_area(self):
+        """Results display area"""
+        ui.label('Results').classes('text-h6 mb-4')
+        ui.label('Run a backtest to see results here').classes('text-sm text-gray-500 italic')
+
+        self.results_container = ui.column().classes('w-full')
+
+    # Event handlers
+    def _on_pattern_selected(self, pattern_name: Optional[str]):
+        """Handle pattern selection"""
+        self.selected_pattern = pattern_name
+        self._update_parameter_editor()
+
+        if pattern_name:
+            comp_data = get_component('entry_pattern', pattern_name)
+            ui.notify(f'Selected: {comp_data["metadata"].display_name}', type='info')
+
+    def _on_filter_toggled(self, filter_name: str, enabled: bool):
+        """Handle filter toggle"""
+        if enabled and filter_name not in self.selected_filters:
+            self.selected_filters.append(filter_name)
+            comp_data = get_component('filter', filter_name)
+            ui.notify(f'Enabled: {comp_data["metadata"].display_name}', type='info')
+        elif not enabled and filter_name in self.selected_filters:
+            self.selected_filters.remove(filter_name)
+            comp_data = get_component('filter', filter_name)
+            ui.notify(f'Disabled: {comp_data["metadata"].display_name}', type='warning')
+
+        self._update_parameter_editor()
+
+    def _on_session_toggled(self, session_name: str, enabled: bool):
+        """Handle session toggle"""
+        if enabled and session_name not in self.selected_sessions:
+            self.selected_sessions.append(session_name)
+            comp_data = get_component('session', session_name)
+            ui.notify(f'Enabled: {comp_data["metadata"].display_name}', type='info')
+        elif not enabled and session_name in self.selected_sessions:
+            self.selected_sessions.remove(session_name)
+            comp_data = get_component('session', session_name)
+            ui.notify(f'Disabled: {comp_data["metadata"].display_name}', type='warning')
+
+        self._update_parameter_editor()
+
+    def _on_param_changed(self, param_key: str, value: Any):
+        """Handle parameter value change"""
+        self.parameter_values[param_key] = value
+
+    def _set_opt_min(self, param_key: str, value: float):
+        """Set optimization minimum"""
+        if param_key not in self.optimization_ranges:
+            self.optimization_ranges[param_key] = {}
+        self.optimization_ranges[param_key]['min'] = value
+
+    def _set_opt_max(self, param_key: str, value: float):
+        """Set optimization maximum"""
+        if param_key not in self.optimization_ranges:
+            self.optimization_ranges[param_key] = {}
+        self.optimization_ranges[param_key]['max'] = value
+
+    def _set_opt_step(self, param_key: str, value: float):
+        """Set optimization step"""
+        if param_key not in self.optimization_ranges:
+            self.optimization_ranges[param_key] = {}
+        self.optimization_ranges[param_key]['step'] = value
+
+    async def _run_single_backtest(self):
+        """Run a single backtest with current parameters"""
+        # Validation
+        if not self.selected_pattern:
+            ui.notify('Please select an entry pattern first', type='negative')
+            return
+
+        ui.notify('Downloading market data...', type='info')
+
+        try:
+            # Download data
+            df = yf.download(
+                self.asset_input.value,
+                start=self.start_date.value,
+                end=self.end_date.value,
+                interval=self.timeframe_select.value,
+                progress=False
+            )
+
+            if df.empty:
+                ui.notify(f'No data found for {self.asset_input.value}', type='negative')
+                return
+
+            # Normalize column names
+            df.columns = [col.lower() if isinstance(col, str) else col for col in df.columns]
+
+            # Handle multi-index columns from yfinance
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = [col[0].lower() if isinstance(col, tuple) else col.lower()
+                             for col in df.columns]
+
+            ui.notify(f'Downloaded {len(df)} bars. Applying pattern...', type='info')
+
+            # Apply pattern
+            pattern_func = get_component('entry_pattern', self.selected_pattern)['function']
+            pattern_params = self._extract_params_for_component(
+                self.selected_pattern, 'entry_pattern'
+            )
+            df = pattern_func(df, **pattern_params)
+
+            # Apply filters
+            for filter_name in self.selected_filters:
+                filter_func = get_component('filter', filter_name)['function']
+                filter_params = self._extract_params_for_component(filter_name, 'filter')
+                df = filter_func(df, **filter_params)
+
+            # Apply sessions
+            for session_name in self.selected_sessions:
+                session_func = get_component('session', session_name)['function']
+                session_params = self._extract_params_for_component(session_name, 'session')
+                df = session_func(df, **session_params)
+
+            # Combine filters and sessions
+            if self.selected_filters or self.selected_sessions:
+                if 'filter_ok' not in df.columns:
+                    df['filter_ok'] = True
+                if 'session_ok' not in df.columns:
+                    df['session_ok'] = True
+
+                # Final filter: both must be True
+                final_filter = df['filter_ok'] & df['session_ok']
+                df['signal_long'] = df.get('signal_long', False) & final_filter
+                df['signal_short'] = df.get('signal_short', False) & final_filter
+
+            ui.notify('Running backtest...', type='info')
+
+            # Run backtest
+            config = BacktestConfig(
+                initial_capital=self.initial_capital.value,
+                commission_per_trade=self.commission.value,
+                slippage_pips=self.slippage.value
+            )
+
+            engine = BacktestEngine(config)
+            result = engine.run(df, {
+                'pattern': self.selected_pattern,
+                'filters': self.selected_filters,
+                'sessions': self.selected_sessions
+            })
+
+            # Display results
+            self._display_results(result, df)
+
+            ui.notify('Backtest complete!', type='positive')
+
+        except Exception as e:
+            error_msg = str(e)
+            ui.notify(f'Error: {error_msg}', type='negative')
+            print(f"Backtest error: {traceback.format_exc()}")
+
+    def _extract_params_for_component(self, component_name: str, category: str) -> Dict:
+        """Extract parameter values for a specific component"""
+        params = {}
+        prefix = f"{category}.{component_name}."
+
+        for param_key, param_value in self.parameter_values.items():
+            if param_key.startswith(prefix):
+                param_name = param_key[len(prefix):]
+                params[param_name] = param_value
+
+        return params
+
+    async def _run_optimization(self):
+        """Run optimization across parameter ranges"""
+        ui.notify('Optimization will be implemented in Phase 3', type='warning')
+
+    def _display_results(self, result, df: pd.DataFrame):
+        """Display backtest results"""
+        self.results_container.clear()
+
+        with self.results_container:
+            # Summary metrics
+            ui.label('Performance Summary').classes('text-h6 mb-4')
+
+            with ui.grid(columns=4).classes('w-full gap-4'):
+                self._metric_card('Total Trades', result.metrics['total_trades'], '',
+                                 'blue')
+                self._metric_card('Win Rate', result.metrics['win_rate'], '%',
+                                 'green' if result.metrics['win_rate'] > 50 else 'orange')
+                self._metric_card('Profit Factor', result.metrics['profit_factor'], '',
+                                 'green' if result.metrics['profit_factor'] > 1.5 else 'orange')
+                self._metric_card('ROI', result.metrics['roi'], '%',
+                                 'green' if result.metrics['roi'] > 0 else 'red')
+                self._metric_card('Max Drawdown', result.metrics['max_drawdown'], '%',
+                                 'red')
+                self._metric_card('Sharpe Ratio', result.metrics['sharpe_ratio'], '',
+                                 'green' if result.metrics['sharpe_ratio'] > 1 else 'orange')
+                self._metric_card('Avg Win', result.metrics['avg_win'], '$',
+                                 'green')
+                self._metric_card('Avg Loss', result.metrics['avg_loss'], '$',
+                                 'red')
+
+            ui.separator().classes('my-4')
+
+            # Trade statistics
+            ui.label('Trade Statistics').classes('text-h6 mb-4')
+
+            with ui.grid(columns=3).classes('w-full gap-4'):
+                self._metric_card('Winning Trades', result.metrics['winning_trades'], '',
+                                 'green')
+                self._metric_card('Losing Trades', result.metrics['losing_trades'], '',
+                                 'red')
+                self._metric_card('Total P&L', result.metrics['total_pnl'], '$',
+                                 'green' if result.metrics['total_pnl'] > 0 else 'red')
+
+            ui.separator().classes('my-4')
+
+            # Trade log (if trades exist)
+            if len(result.trades) > 0:
+                ui.label('Trade Log (Last 10 Trades)').classes('text-h6 mb-4')
+
+                # Prepare trade data for table
+                trade_columns = [
+                    {'name': 'entry_bar', 'label': 'Entry Bar', 'field': 'entry_bar'},
+                    {'name': 'exit_bar', 'label': 'Exit Bar', 'field': 'exit_bar'},
+                    {'name': 'direction', 'label': 'Direction', 'field': 'direction'},
+                    {'name': 'entry_price', 'label': 'Entry Price', 'field': 'entry_price'},
+                    {'name': 'exit_price', 'label': 'Exit Price', 'field': 'exit_price'},
+                    {'name': 'pnl', 'label': 'P&L', 'field': 'pnl'},
+                    {'name': 'exit_reason', 'label': 'Exit Reason', 'field': 'exit_reason'}
+                ]
+
+                trade_rows = []
+                for _, trade in result.trades.tail(10).iterrows():
+                    trade_rows.append({
+                        'entry_bar': int(trade['entry_bar']),
+                        'exit_bar': int(trade['exit_bar']),
+                        'direction': trade['direction'],
+                        'entry_price': f"{trade['entry_price']:.2f}",
+                        'exit_price': f"{trade['exit_price']:.2f}",
+                        'pnl': f"${trade['pnl']:.2f}",
+                        'exit_reason': trade['exit_reason']
+                    })
+
+                ui.table(columns=trade_columns, rows=trade_rows).classes('w-full')
+            else:
+                ui.label('No trades executed. Try adjusting parameters or selecting a different pattern.').classes(
+                    'text-sm text-orange-600 italic'
+                )
+
+    def _metric_card(self, label: str, value: float, suffix: str, color: str = 'blue'):
+        """Render a metric card"""
+        with ui.card().classes(f'p-4 bg-{color}-50'):
+            ui.label(label).classes('text-sm text-gray-600 mb-1')
+            ui.label(f'{value:.2f}{suffix}').classes(f'text-2xl font-bold text-{color}-700')
+
+
+# Main entry point
+def main():
+    """Main application entry point"""
+    ui.page_title = 'Strategy Builder - Dynamic UI'
+
+    builder = StrategyBuilderUI()
+    builder.render()
+
+    ui.run(
+        title='Strategy Builder',
+        port=8080,
+        reload=False,
+        show=False  # Set to True to auto-open browser
+    )
+
+
+if __name__ in {"__main__", "__mp_main__"}:
+    main()
