@@ -443,8 +443,8 @@ class StrategyBuilderUI:
             try:
                 df = fetch_data(
                     symbol=self.asset_input.value,
-                    start=self.start_date.value,
-                    end=self.end_date.value,
+                    start_date=self.start_date.value,
+                    end_date=self.end_date.value,
                     interval=self.timeframe_select.value,
                     provider='yfinance'
                 )
@@ -452,8 +452,8 @@ class StrategyBuilderUI:
                 ui.notify(f'YFinance unavailable, using mock data for testing', type='warning')
                 df = fetch_data(
                     symbol=self.asset_input.value,
-                    start=self.start_date.value,
-                    end=self.end_date.value,
+                    start_date=self.start_date.value,
+                    end_date=self.end_date.value,
                     interval=self.timeframe_select.value,
                     provider='mock'
                 )
@@ -553,8 +553,8 @@ class StrategyBuilderUI:
             try:
                 df = fetch_data(
                     symbol=self.asset_input.value,
-                    start=self.start_date.value,
-                    end=self.end_date.value,
+                    start_date=self.start_date.value,
+                    end_date=self.end_date.value,
                     interval=self.timeframe_select.value,
                     provider='yfinance'
                 )
@@ -562,8 +562,8 @@ class StrategyBuilderUI:
                 ui.notify(f'YFinance unavailable, using mock data for testing', type='warning')
                 df = fetch_data(
                     symbol=self.asset_input.value,
-                    start=self.start_date.value,
-                    end=self.end_date.value,
+                    start_date=self.start_date.value,
+                    end_date=self.end_date.value,
                     interval=self.timeframe_select.value,
                     provider='mock'
                 )
