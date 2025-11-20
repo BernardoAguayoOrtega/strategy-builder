@@ -14,6 +14,7 @@ Key Features:
 from nicegui import ui, app
 from builder_framework import get_all_components, get_component
 from backtesting_framework import BacktestEngine, BacktestConfig
+from optimizer import StrategyOptimizer, OptimizationResult, generate_parameter_grid
 import yfinance as yf
 import pandas as pd
 from typing import Dict, List, Any, Optional
@@ -353,12 +354,12 @@ class StrategyBuilderUI:
             ).props('color=primary').classes('w-full')
 
             ui.button(
-                'Run Optimization (Phase 3)',
+                'Run Optimization',
                 on_click=self._run_optimization,
                 icon='tune'
-            ).props('color=secondary disabled').classes('w-full mt-2')
+            ).props('color=secondary').classes('w-full mt-2')
 
-            ui.label('Optimization will be enabled in Phase 3').classes(
+            ui.label('Optimize parameters across defined ranges').classes(
                 'text-xs text-gray-500 italic mt-1'
             )
 
@@ -531,7 +532,130 @@ class StrategyBuilderUI:
 
     async def _run_optimization(self):
         """Run optimization across parameter ranges"""
-        ui.notify('Optimization will be implemented in Phase 3', type='warning')
+        # Validation
+        if not self.selected_pattern:
+            ui.notify('Please select an entry pattern first', type='negative')
+            return
+
+        if not self.optimization_ranges:
+            ui.notify('No optimization ranges defined. Set min/max/step for optimizable parameters.',
+                     type='warning')
+            return
+
+        ui.notify('Starting optimization... This may take several minutes.', type='info')
+
+        try:
+            # Download data
+            ui.notify('Downloading market data...', type='info')
+            df = yf.download(
+                self.asset_input.value,
+                start=self.start_date.value,
+                end=self.end_date.value,
+                interval=self.timeframe_select.value,
+                progress=False
+            )
+
+            if df.empty:
+                ui.notify(f'No data found for {self.asset_input.value}', type='negative')
+                return
+
+            # Normalize column names
+            df.columns = [col.lower() if isinstance(col, str) else col for col in df.columns]
+
+            # Handle multi-index columns from yfinance
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = [col[0].lower() if isinstance(col, tuple) else col.lower()
+                             for col in df.columns]
+
+            ui.notify(f'Downloaded {len(df)} bars. Building parameter grid...', type='info')
+
+            # Build parameter ranges for optimization
+            # Extract only the parameters for the selected pattern
+            pattern_prefix = f"entry_pattern.{self.selected_pattern}."
+            param_ranges = {}
+
+            for param_key, range_spec in self.optimization_ranges.items():
+                if not param_key.startswith(pattern_prefix):
+                    continue  # Skip parameters from other components
+
+                # Extract parameter name
+                param_name = param_key[len(pattern_prefix):]
+
+                # Get parameter specification from metadata
+                comp_data = get_component('entry_pattern', self.selected_pattern)
+                metadata = comp_data['metadata']
+
+                if param_name not in metadata.parameters:
+                    continue
+
+                param_spec = metadata.parameters[param_name]
+
+                # Build range
+                min_val = range_spec.get('min', param_spec.get('min', 0))
+                max_val = range_spec.get('max', param_spec.get('max', 100))
+                step = range_spec.get('step', param_spec.get('step', 1))
+
+                param_type = param_spec['type']
+
+                if param_type == 'int':
+                    param_ranges[param_name] = list(range(int(min_val), int(max_val) + 1, int(step)))
+                elif param_type == 'float':
+                    values = []
+                    current = float(min_val)
+                    while current <= float(max_val):
+                        values.append(round(current, 2))
+                        current += float(step)
+                    param_ranges[param_name] = values
+
+            if not param_ranges:
+                ui.notify('No optimizable parameters configured with ranges', type='warning')
+                return
+
+            # Build filter configurations
+            filter_configs = []
+            for filter_name in self.selected_filters:
+                filter_params = self._extract_params_for_component(filter_name, 'filter')
+                filter_configs.append({
+                    'name': filter_name,
+                    'params': filter_params
+                })
+
+            total_combinations = 1
+            for values in param_ranges.values():
+                total_combinations *= len(values)
+
+            ui.notify(f'Testing {total_combinations} parameter combinations...', type='info')
+
+            # Run optimization
+            config = BacktestConfig(
+                initial_capital=self.initial_capital.value,
+                commission_per_trade=self.commission.value,
+                slippage_pips=self.slippage.value
+            )
+
+            optimizer = StrategyOptimizer(config, n_jobs=-1)  # Use all CPUs
+            results = optimizer.optimize(
+                df,
+                self.selected_pattern,
+                param_ranges,
+                filter_configs
+            )
+
+            if not results:
+                ui.notify('Optimization completed but no valid results (zero trades in all combinations)',
+                         type='warning')
+                return
+
+            # Display results
+            self._display_optimization_results(results[:20])  # Top 20 results
+
+            ui.notify(f'Optimization complete! Found {len(results)} valid configurations. Best score: {results[0].rank_score:.4f}',
+                     type='positive')
+
+        except Exception as e:
+            error_msg = str(e)
+            ui.notify(f'Optimization error: {error_msg}', type='negative')
+            print(f"Optimization error: {traceback.format_exc()}")
 
     def _display_results(self, result, df: pd.DataFrame):
         """Display backtest results"""
@@ -605,6 +729,84 @@ class StrategyBuilderUI:
             else:
                 ui.label('No trades executed. Try adjusting parameters or selecting a different pattern.').classes(
                     'text-sm text-orange-600 italic'
+                )
+
+    def _display_optimization_results(self, results: List[OptimizationResult]):
+        """Display optimization results in a table"""
+        self.results_container.clear()
+
+        with self.results_container:
+            ui.label(f'Optimization Results - Top {len(results)} Configurations').classes('text-h6 mb-4')
+
+            # Build table
+            columns = [
+                {'name': 'rank', 'label': 'Rank', 'field': 'rank', 'align': 'left'},
+                {'name': 'score', 'label': 'Score', 'field': 'score', 'align': 'left'},
+                {'name': 'roi', 'label': 'ROI %', 'field': 'roi', 'align': 'left'},
+                {'name': 'pf', 'label': 'Profit Factor', 'field': 'pf', 'align': 'left'},
+                {'name': 'trades', 'label': 'Trades', 'field': 'trades', 'align': 'left'},
+                {'name': 'win_rate', 'label': 'Win Rate %', 'field': 'win_rate', 'align': 'left'},
+                {'name': 'max_dd', 'label': 'Max DD %', 'field': 'max_dd', 'align': 'left'},
+                {'name': 'params', 'label': 'Parameters', 'field': 'params', 'align': 'left'}
+            ]
+
+            rows = []
+            for i, result in enumerate(results, 1):
+                m = result.metrics
+                rows.append({
+                    'rank': i,
+                    'score': f"{result.rank_score:.4f}",
+                    'roi': f"{m['roi']:.2f}",
+                    'pf': f"{m['profit_factor']:.2f}",
+                    'trades': int(m['total_trades']),
+                    'win_rate': f"{m['win_rate']:.2f}",
+                    'max_dd': f"{m['max_drawdown']:.2f}",
+                    'params': str(result.parameters)
+                })
+
+            ui.table(columns=columns, rows=rows, row_key='rank').classes('w-full')
+
+            ui.separator().classes('my-4')
+
+            # Detailed view of best result
+            if results:
+                best = results[0]
+                ui.label('Best Configuration Details').classes('text-h6 mb-4')
+
+                with ui.card().classes('p-4 bg-green-50'):
+                    ui.label(f'Rank: #1 | Score: {best.rank_score:.4f}').classes(
+                        'text-lg font-bold text-green-700 mb-2'
+                    )
+
+                    ui.label('Parameters:').classes('font-bold mt-2 mb-1')
+                    for param, value in best.parameters.items():
+                        ui.label(f'  • {param}: {value}').classes('text-sm')
+
+                    ui.label('Metrics:').classes('font-bold mt-4 mb-1')
+                    metrics_to_show = [
+                        ('ROI', best.metrics['roi'], '%'),
+                        ('Profit Factor', best.metrics['profit_factor'], ''),
+                        ('Win Rate', best.metrics['win_rate'], '%'),
+                        ('Total Trades', best.metrics['total_trades'], ''),
+                        ('Max Drawdown', best.metrics['max_drawdown'], '%'),
+                        ('Sharpe Ratio', best.metrics['sharpe_ratio'], ''),
+                        ('Avg Win', best.metrics['avg_win'], '$'),
+                        ('Avg Loss', best.metrics['avg_loss'], '$')
+                    ]
+
+                    for label, value, suffix in metrics_to_show:
+                        ui.label(f'  • {label}: {value:.2f}{suffix}').classes('text-sm')
+
+                ui.separator().classes('my-4')
+
+                # Export button (Phase 4 feature - placeholder for now)
+                ui.label('Export Features').classes('text-h6 mb-4')
+                ui.button(
+                    'Export Best to Pine Script (Phase 4)',
+                    icon='download'
+                ).props('color=green disabled').classes('w-full')
+                ui.label('Export to Pine Script will be enabled in Phase 4').classes(
+                    'text-xs text-gray-500 italic mt-1'
                 )
 
     def _metric_card(self, label: str, value: float, suffix: str, color: str = 'blue'):
