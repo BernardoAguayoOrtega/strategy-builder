@@ -202,6 +202,14 @@ class StrategyBuilderUI:
 
                 # Add optimization range if optimizable
                 if param_spec.get('optimizable', False):
+                    # Initialize optimization ranges with defaults
+                    if param_key not in self.optimization_ranges:
+                        self.optimization_ranges[param_key] = {
+                            'min': param_spec.get('min', 0),
+                            'max': param_spec.get('max', 100),
+                            'step': param_spec.get('step', 1)
+                        }
+
                     with ui.row().classes('w-full gap-2 mt-1 mb-2'):
                         ui.label('Optimize range:').classes('text-xs font-bold')
                         ui.number(
@@ -233,6 +241,14 @@ class StrategyBuilderUI:
 
                 # Add optimization range if optimizable
                 if param_spec.get('optimizable', False):
+                    # Initialize optimization ranges with defaults
+                    if param_key not in self.optimization_ranges:
+                        self.optimization_ranges[param_key] = {
+                            'min': param_spec.get('min', 0.0),
+                            'max': param_spec.get('max', 10.0),
+                            'step': param_spec.get('step', 0.1)
+                        }
+
                     with ui.row().classes('w-full gap-2 mt-1 mb-2'):
                         ui.label('Optimize range:').classes('text-xs font-bold')
                         ui.number(
