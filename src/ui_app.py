@@ -862,7 +862,7 @@ class StrategyBuilderUI:
                 # Test with no filter
                 test_configs.append({
                     'pattern': pattern_name,
-                    'pattern_params': {k: v.get('default') for k, v in pattern_meta.get('parameters', {}).items()},
+                    'pattern_params': {k: v.get('default') for k, v in pattern_meta.parameters.items()},
                     'filters': []
                 })
 
@@ -872,12 +872,12 @@ class StrategyBuilderUI:
 
                     filter_config = {
                         'name': filter_name,
-                        'params': {k: v.get('default') for k, v in filter_meta.get('parameters', {}).items()}
+                        'params': {k: v.get('default') for k, v in filter_meta.parameters.items()}
                     }
 
                     test_configs.append({
                         'pattern': pattern_name,
-                        'pattern_params': {k: v.get('default') for k, v in pattern_meta.get('parameters', {}).items()},
+                        'pattern_params': {k: v.get('default') for k, v in pattern_meta.parameters.items()},
                         'filters': [filter_config]
                     })
 
