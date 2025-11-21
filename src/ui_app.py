@@ -12,7 +12,7 @@ Key Features:
 """
 
 from nicegui import ui, app
-from builder_framework import get_all_components, get_component
+from builder_framework import get_all_components, get_component, get_components_by_category
 from backtesting_framework import BacktestEngine, BacktestConfig
 from data_providers import fetch_data, DataManager
 from optimizer import StrategyOptimizer, OptimizationResult, generate_parameter_grid
@@ -849,16 +849,15 @@ class StrategyBuilderUI:
             ui.notify('Starting auto-discovery... This may take a few minutes', type='info')
 
             # Get all available patterns and filters
-            patterns = list_components('entry_pattern')
-            filters = list_components('filter')
+            patterns_dict = get_components_by_category('entry_pattern')
+            filters_dict = get_components_by_category('filter')
 
             # Prepare test configurations
             # Test each pattern with: no filter, each individual filter
             test_configs = []
 
-            for pattern in patterns:
-                pattern_name = pattern['name']
-                pattern_meta = pattern['metadata']
+            for pattern_name, pattern_comp in patterns_dict.items():
+                pattern_meta = pattern_comp['metadata']
 
                 # Test with no filter
                 test_configs.append({
@@ -868,8 +867,7 @@ class StrategyBuilderUI:
                 })
 
                 # Test with each filter individually
-                for filter_comp in filters:
-                    filter_name = filter_comp['name']
+                for filter_name, filter_comp in filters_dict.items():
                     filter_meta = filter_comp['metadata']
 
                     filter_config = {
