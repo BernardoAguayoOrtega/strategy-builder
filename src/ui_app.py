@@ -457,6 +457,32 @@ class StrategyBuilderUI:
             self.optimization_ranges[param_key] = {}
         self.optimization_ranges[param_key]['step'] = value
 
+    def _adjust_date_range_for_intraday(self, start_date: str, end_date: str, interval: str):
+        """
+        Adjust date range if using intraday timeframe (Yahoo Finance 730-day limit)
+
+        Returns:
+            tuple: (adjusted_start_date, end_date, was_adjusted)
+        """
+        from datetime import datetime, timedelta
+
+        intraday_intervals = ['1m', '5m', '15m', '30m', '1h']
+        if interval not in intraday_intervals:
+            return start_date, end_date, False
+
+        # Calculate date range in days
+        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+        end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+        days_range = (end_dt - start_dt).days
+
+        # If range exceeds 730 days, adjust start date
+        if days_range > 730:
+            adjusted_start = end_dt - timedelta(days=729)  # 729 to be safe
+            adjusted_start_str = adjusted_start.strftime('%Y-%m-%d')
+            return adjusted_start_str, end_date, True
+
+        return start_date, end_date, False
+
     async def _run_single_backtest(self):
         """Run a single backtest with current parameters"""
         # Validation
@@ -467,13 +493,26 @@ class StrategyBuilderUI:
         ui.notify('Fetching market data...', type='info')
 
         try:
+            # Adjust date range for intraday data if needed
+            start_date, end_date, was_adjusted = self._adjust_date_range_for_intraday(
+                self.start_date.value,
+                self.end_date.value,
+                self.timeframe_select.value
+            )
+
+            if was_adjusted:
+                ui.notify(
+                    f'⚠️ Intraday data limited to 730 days. Adjusted start date to {start_date}',
+                    type='warning'
+                )
+
             # Fetch data using data abstraction layer
             # Try yfinance first, fallback to mock data for testing
             try:
                 df = fetch_data(
                     symbol=self.asset_input.value,
-                    start_date=self.start_date.value,
-                    end_date=self.end_date.value,
+                    start_date=start_date,
+                    end_date=end_date,
                     interval=self.timeframe_select.value,
                     provider='yfinance'
                 )
@@ -577,13 +616,26 @@ class StrategyBuilderUI:
         ui.notify('Starting optimization... This may take several minutes.', type='info')
 
         try:
+            # Adjust date range for intraday data if needed
+            start_date, end_date, was_adjusted = self._adjust_date_range_for_intraday(
+                self.start_date.value,
+                self.end_date.value,
+                self.timeframe_select.value
+            )
+
+            if was_adjusted:
+                ui.notify(
+                    f'⚠️ Intraday data limited to 730 days. Adjusted start date to {start_date}',
+                    type='warning'
+                )
+
             # Fetch data using data abstraction layer
             ui.notify('Fetching market data...', type='info')
             try:
                 df = fetch_data(
                     symbol=self.asset_input.value,
-                    start_date=self.start_date.value,
-                    end_date=self.end_date.value,
+                    start_date=start_date,
+                    end_date=end_date,
                     interval=self.timeframe_select.value,
                     provider='yfinance'
                 )
@@ -883,12 +935,25 @@ class StrategyBuilderUI:
 
             ui.notify(f'Testing {len(test_configs)} strategy combinations...', type='info')
 
+            # Adjust date range for intraday data if needed
+            start_date, end_date, was_adjusted = self._adjust_date_range_for_intraday(
+                self.start_date.value,
+                self.end_date.value,
+                self.timeframe_select.value
+            )
+
+            if was_adjusted:
+                ui.notify(
+                    f'⚠️ Intraday data limited to 730 days. Adjusted start date to {start_date}',
+                    type='warning'
+                )
+
             # Download data once
             try:
                 df = fetch_data(
                     symbol=self.asset_input.value,
-                    start_date=self.start_date.value,
-                    end_date=self.end_date.value,
+                    start_date=start_date,
+                    end_date=end_date,
                     interval=self.timeframe_select.value,
                     provider='yfinance'
                 )
