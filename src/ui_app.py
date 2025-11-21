@@ -379,6 +379,19 @@ class StrategyBuilderUI:
                 'text-xs text-gray-500 italic mt-1'
             )
 
+            ui.separator().classes('my-4')
+
+            # Auto-Discovery button
+            ui.button(
+                '🔍 Auto-Discover Best Strategy',
+                on_click=self._auto_discover_strategy,
+                icon='auto_awesome'
+            ).props('color=positive').classes('w-full mt-2')
+
+            ui.label('Automatically test all pattern/filter combinations and find the best strategy').classes(
+                'text-xs text-gray-500 italic mt-1'
+            )
+
     def _render_results_area(self):
         """Results display area"""
         ui.label('Results').classes('text-h6 mb-4')
@@ -829,6 +842,239 @@ class StrategyBuilderUI:
                 ui.label('Export to Pine Script will be enabled in Phase 4').classes(
                     'text-xs text-gray-500 italic mt-1'
                 )
+
+    def _auto_discover_strategy(self):
+        """Auto-discover the best strategy by testing all pattern/filter combinations"""
+        try:
+            ui.notify('Starting auto-discovery... This may take a few minutes', type='info')
+
+            # Get all available patterns and filters
+            patterns = list_components('entry_pattern')
+            filters = list_components('filter')
+
+            # Prepare test configurations
+            # Test each pattern with: no filter, each individual filter
+            test_configs = []
+
+            for pattern in patterns:
+                pattern_name = pattern['name']
+                pattern_meta = pattern['metadata']
+
+                # Test with no filter
+                test_configs.append({
+                    'pattern': pattern_name,
+                    'pattern_params': {k: v.get('default') for k, v in pattern_meta.get('parameters', {}).items()},
+                    'filters': []
+                })
+
+                # Test with each filter individually
+                for filter_comp in filters:
+                    filter_name = filter_comp['name']
+                    filter_meta = filter_comp['metadata']
+
+                    filter_config = {
+                        'name': filter_name,
+                        'params': {k: v.get('default') for k, v in filter_meta.get('parameters', {}).items()}
+                    }
+
+                    test_configs.append({
+                        'pattern': pattern_name,
+                        'pattern_params': {k: v.get('default') for k, v in pattern_meta.get('parameters', {}).items()},
+                        'filters': [filter_config]
+                    })
+
+            ui.notify(f'Testing {len(test_configs)} strategy combinations...', type='info')
+
+            # Download data once
+            try:
+                df = fetch_data(
+                    symbol=self.asset_input.value,
+                    start_date=self.start_date.value,
+                    end_date=self.end_date.value,
+                    interval=self.timeframe_select.value,
+                    provider='yfinance'
+                )
+            except Exception as e:
+                ui.notify(f'YFinance unavailable, using mock data for testing: {str(e)}', type='warning')
+                df = fetch_data(
+                    symbol=self.asset_input.value,
+                    start_date=self.start_date.value,
+                    end_date=self.end_date.value,
+                    interval=self.timeframe_select.value,
+                    provider='mock',
+                    num_bars=500
+                )
+
+            # Run backtest for each configuration
+            results = []
+            config_obj = BacktestConfig(
+                initial_capital=self.initial_capital.value,
+                commission_per_trade=self.commission.value,
+                slippage_pips=self.slippage.value
+            )
+
+            for i, test_config in enumerate(test_configs):
+                try:
+                    # Apply pattern
+                    pattern_comp = get_component('entry_pattern', test_config['pattern'])
+                    if not pattern_comp:
+                        continue
+
+                    pattern_func = pattern_comp['function']
+                    df_signals = pattern_func(df.copy(), **test_config['pattern_params'])
+
+                    # Apply filters
+                    for filter_config in test_config['filters']:
+                        filter_comp = get_component('filter', filter_config['name'])
+                        if filter_comp:
+                            filter_func = filter_comp['function']
+                            df_signals = filter_func(df_signals, **filter_config['params'])
+
+                    # Combine filter results
+                    if test_config['filters'] and 'filter_ok' in df_signals.columns:
+                        if 'signal_long' in df_signals.columns:
+                            df_signals['signal_long'] = df_signals['signal_long'] & df_signals['filter_ok']
+                        if 'signal_short' in df_signals.columns:
+                            df_signals['signal_short'] = df_signals['signal_short'] & df_signals['filter_ok']
+
+                    # Run backtest
+                    engine = BacktestEngine(config_obj)
+                    backtest_result = engine.run(df_signals, test_config)
+
+                    # Calculate composite score
+                    score = self._calculate_strategy_score(backtest_result.metrics)
+
+                    # Store result
+                    filter_names = ', '.join([f['name'] for f in test_config['filters']]) if test_config['filters'] else 'None'
+                    results.append({
+                        'pattern': test_config['pattern'],
+                        'filters': filter_names,
+                        'score': score,
+                        'roi': backtest_result.metrics['roi'],
+                        'profit_factor': backtest_result.metrics['profit_factor'],
+                        'win_rate': backtest_result.metrics['win_rate'],
+                        'sharpe_ratio': backtest_result.metrics['sharpe_ratio'],
+                        'max_drawdown': backtest_result.metrics['max_drawdown'],
+                        'total_trades': backtest_result.metrics['total_trades']
+                    })
+
+                except Exception as e:
+                    print(f"Error testing {test_config['pattern']}: {str(e)}")
+                    continue
+
+            # Display results
+            if results:
+                self._display_discovery_results(results)
+                ui.notify(f'Auto-discovery complete! Found {len(results)} valid strategies', type='positive')
+            else:
+                ui.notify('No valid strategies found. Try different date range or asset.', type='warning')
+
+        except Exception as e:
+            ui.notify(f'Auto-discovery failed: {str(e)}', type='negative')
+            print(f"Auto-discovery error: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
+    def _calculate_strategy_score(self, metrics: dict) -> float:
+        """
+        Calculate composite strategy score
+
+        Scoring formula:
+        - ROI: 30%
+        - Profit Factor: 25%
+        - Win Rate: 15%
+        - Sharpe Ratio: 15%
+        - Drawdown penalty: 10%
+        - Trade count penalty: 5%
+        """
+        # Normalize components
+        roi_score = min(max(metrics['roi'] / 100, -1), 2)  # Cap at 200% ROI
+        pf_score = min(metrics['profit_factor'] / 3, 1.0)  # Cap at PF=3
+        wr_score = metrics['win_rate'] / 100  # Already a percentage
+        sharpe_score = min(max(metrics['sharpe_ratio'] / 3, 0), 1)  # Cap at Sharpe=3
+
+        # Drawdown penalty (less drawdown = better)
+        dd_penalty = max(1 - abs(metrics['max_drawdown']) / 100, 0)
+
+        # Trade count penalty (too few trades = unreliable)
+        trade_penalty = min(metrics['total_trades'] / 30, 1.0)  # Penalize if < 30 trades
+
+        # Composite score
+        score = (
+            roi_score * 0.30 +
+            pf_score * 0.25 +
+            wr_score * 0.15 +
+            sharpe_score * 0.15 +
+            dd_penalty * 0.10 +
+            trade_penalty * 0.05
+        )
+
+        return score
+
+    def _display_discovery_results(self, results: list):
+        """Display auto-discovery results in a table"""
+        # Sort by score (descending)
+        results_sorted = sorted(results, key=lambda x: x['score'], reverse=True)
+
+        # Show top 10
+        top_results = results_sorted[:10]
+
+        # Clear previous results and display new ones
+        self.results_container.clear()
+
+        with self.results_container:
+            ui.label('Auto-Discovery Results').classes('text-h5 font-bold mb-4')
+
+            # Highlight best strategy
+            best = top_results[0]
+            with ui.card().classes('w-full p-4 bg-green-50 border-2 border-green-500 mb-4'):
+                ui.label('🏆 Best Strategy Found').classes('text-h6 font-bold text-green-700 mb-2')
+                ui.label(f"Pattern: {best['pattern']}").classes('font-semibold')
+                ui.label(f"Filters: {best['filters']}").classes('text-sm')
+                ui.label(f"Composite Score: {best['score']:.4f}").classes('text-lg font-bold text-green-700 mt-2')
+
+                with ui.row().classes('gap-4 mt-3'):
+                    self._metric_card('ROI', best['roi'], '%', 'green')
+                    self._metric_card('Profit Factor', best['profit_factor'], '', 'blue')
+                    self._metric_card('Win Rate', best['win_rate'], '%', 'purple')
+                    self._metric_card('Sharpe', best['sharpe_ratio'], '', 'orange')
+
+            # Results table
+            ui.label('Top 10 Strategies').classes('text-h6 font-bold mt-6 mb-3')
+
+            columns = [
+                {'name': 'rank', 'label': 'Rank', 'field': 'rank', 'align': 'center'},
+                {'name': 'pattern', 'label': 'Pattern', 'field': 'pattern', 'align': 'left'},
+                {'name': 'filters', 'label': 'Filters', 'field': 'filters', 'align': 'left'},
+                {'name': 'score', 'label': 'Score', 'field': 'score', 'align': 'center', 'sortable': True},
+                {'name': 'roi', 'label': 'ROI %', 'field': 'roi', 'align': 'center', 'sortable': True},
+                {'name': 'pf', 'label': 'PF', 'field': 'pf', 'align': 'center', 'sortable': True},
+                {'name': 'wr', 'label': 'WR %', 'field': 'wr', 'align': 'center', 'sortable': True},
+                {'name': 'sharpe', 'label': 'Sharpe', 'field': 'sharpe', 'align': 'center', 'sortable': True},
+                {'name': 'dd', 'label': 'MaxDD %', 'field': 'dd', 'align': 'center', 'sortable': True},
+                {'name': 'trades', 'label': 'Trades', 'field': 'trades', 'align': 'center'}
+            ]
+
+            rows = []
+            for i, result in enumerate(top_results, 1):
+                rows.append({
+                    'rank': i,
+                    'pattern': result['pattern'],
+                    'filters': result['filters'],
+                    'score': f"{result['score']:.4f}",
+                    'roi': f"{result['roi']:.2f}",
+                    'pf': f"{result['profit_factor']:.2f}",
+                    'wr': f"{result['win_rate']:.2f}",
+                    'sharpe': f"{result['sharpe_ratio']:.2f}",
+                    'dd': f"{result['max_drawdown']:.2f}",
+                    'trades': int(result['total_trades'])
+                })
+
+            ui.table(columns=columns, rows=rows).classes('w-full')
+
+            ui.label('💡 Tip: Select the best strategy manually in Step 1, then optimize its parameters').classes(
+                'text-sm text-gray-600 italic mt-4'
+            )
 
     def _metric_card(self, label: str, value: float, suffix: str, color: str = 'blue'):
         """Render a metric card"""
